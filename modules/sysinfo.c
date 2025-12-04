@@ -8,6 +8,8 @@
 #include <linux/timer.h>
 #include <linux/jiffies.h>
 #include <linux/sched/signal.h> // Necesario para for_each_process
+#include <linux/sched/cputime.h> // Para obtener tiempo de CPU
+#include <linux/mm_types.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Julio Herrera");
@@ -20,18 +22,17 @@ MODULE_VERSION("1.0");
 static int sysinfo_show(struct seq_file *m, void *v) {
     struct sysinfo si;
     struct task_struct *task;
-    unsigned long rss;
+    unsigned long rss, vsz;
     bool first_process = true;
+    unsigned long total_ram_kb;
 
     // 1. Obtener Memoria Global
     si_meminfo(&si);
-    // Convertir a MB (dependiendo de si.mem_unit, usualmente bytes o pages)
-    // Una forma segura es convertir todo a Bytes y luego dividir
+    // Convertir a KB
     unsigned long total_ram_mb = (si.totalram * si.mem_unit) / (1024 * 1024);
     unsigned long free_ram_mb = (si.freeram * si.mem_unit) / (1024 * 1024);
     unsigned long used_ram_mb = total_ram_mb - free_ram_mb;
-    // Ojo: Linux usa mucha RAM para buffer/cache, "used" real suele ser complexo,
-    // pero para este proyecto (Total - Free) suele ser aceptado.
+    total_ram_kb = (si.totalram * si.mem_unit) / 1024;
 
     // 2. Iniciar JSON Global
     seq_printf(m, "{\n");
@@ -46,26 +47,65 @@ static int sysinfo_show(struct seq_file *m, void *v) {
             seq_printf(m, ",\n");
         }
         
-        // Memoria del proceso (RSS)
-        // Cuidado: Procesos del kernel (mm es NULL) no tienen RSS
+        // Memoria del proceso (RSS y VSZ)
         long rss_kb = 0;
+        long vsz_kb = 0;
+        unsigned long mem_percent = 0;
+        
         if (task->mm) {
+            // RSS: Resident Set Size (memoria física)
             rss = get_mm_rss(task->mm);
-            rss_kb = rss * 4; // Asumiendo paginas de 4KB, mejor usar (rss * PAGE_SIZE) / 1024
+            rss_kb = (rss * PAGE_SIZE) / 1024;
+            
+            // VSZ: Virtual Memory Size (memoria virtual total)
+            vsz = task->mm->total_vm;
+            vsz_kb = (vsz * PAGE_SIZE) / 1024;
+            
+            // Porcentaje de memoria
+            if (total_ram_kb > 0) {
+                mem_percent = (rss_kb * 100) / total_ram_kb;
+            }
         }
 
         // Estado del proceso
         char state_char = task_state_to_char(task);
         
+        // CPU Usage - calculado como porcentaje simplificado
+        // Nota: El cálculo exacto de %CPU requiere muestreo en el tiempo
+        // Aquí usamos una aproximación basada en utime + stime
+        u64 utime = 0, stime = 0;
+        unsigned long cpu_percent = 0;
+        
+        task_cputime_adjusted(task, &utime, &stime);
+        u64 total_time = utime + stime;
+        // Convertir a jiffies y calcular porcentaje aproximado
+        // Nota: Este es un cálculo simplificado, idealmente necesitas delta de tiempo
+        if (total_time > 0) {
+            cpu_percent = (total_time * 100) / (jiffies + 1);
+            if (cpu_percent > 100) cpu_percent = 0; // Limitar valores anómalos
+        }
+        
+        // Obtener cmdline (línea de comandos)
+        // Nota: Para procesos del kernel task->mm es NULL, no tienen cmdline
+        char cmdline[256] = {0};
+        if (task->mm) {
+            // Obtener el nombre del comando de argv[0] es complejo desde kernel
+            // Usaremos comm como aproximación, o puedes leer desde /proc/[pid]/cmdline
+            snprintf(cmdline, sizeof(cmdline), "%s", task->comm);
+        } else {
+            snprintf(cmdline, sizeof(cmdline), "[%s]", task->comm);
+        }
+        
         // Escribir objeto JSON del proceso
         seq_printf(m, "    {\n");
         seq_printf(m, "      \"pid\": %d,\n", task->pid);
         seq_printf(m, "      \"name\": \"%s\",\n", task->comm);
-        seq_printf(m, "      \"state\": \"%c\",\n", state_char);
-        seq_printf(m, "      \"rss_kb\": %ld\n", rss_kb);
-        // Nota: Calcular %CPU en kernel es muy difícil en una sola lectura,
-        // muchos estudiantes lo calculan en el Daemon de Go o ponen 0 aquí.
-        // El %RAM se puede calcular aquí: (rss_kb / total_ram_kb) * 100
+        seq_printf(m, "      \"cmdline\": \"%s\",\n", cmdline);
+        seq_printf(m, "      \"vsz\": %ld,\n", vsz_kb);
+        seq_printf(m, "      \"rss\": %ld,\n", rss_kb);
+        seq_printf(m, "      \"mem_percent\": %lu,\n", mem_percent);
+        seq_printf(m, "      \"cpu_percent\": %lu,\n", cpu_percent);
+        seq_printf(m, "      \"state\": \"%c\"\n", state_char);
         seq_printf(m, "    }");
         
         first_process = false;
