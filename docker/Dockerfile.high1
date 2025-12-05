@@ -1,0 +1,3 @@
+FROM python:3.9-alpine
+# Ejecuta un script de una linea que calcula potencias infinitamente
+CMD ["python", "-c", "while True: _ = 999999 ** 9999"]

@@ -7,14 +7,14 @@
 #include <linux/sched.h>
 #include <linux/timer.h>
 #include <linux/jiffies.h>
-#include <linux/sched/signal.h> // Necesario para for_each_process
-#include <linux/sched/cputime.h> // Para obtener tiempo de CPU
+#include <linux/sched/signal.h>
+#include <linux/sched/cputime.h>
 #include <linux/mm_types.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Julio Herrera");
 MODULE_DESCRIPTION("Modulo Monitor de Sistema JSON");
-MODULE_VERSION("1.0");
+MODULE_VERSION("1.1"); // Version actualizada
 
 // CAMBIA ESTO POR TU CARNET REAL
 #define PROC_NAME "sysinfo_so1_202300850" 
@@ -24,15 +24,17 @@ static int sysinfo_show(struct seq_file *m, void *v) {
     struct task_struct *task;
     unsigned long rss, vsz;
     bool first_process = true;
-    unsigned long total_ram_kb;
+    unsigned long total_ram_pages;
+    unsigned long total_jiffies;
 
-    // 1. Obtener Memoria Global
     si_meminfo(&si);
-    // Convertir a KB
+    total_jiffies = jiffies;
+    // Convertir a MB
     unsigned long total_ram_mb = (si.totalram * si.mem_unit) / (1024 * 1024);
     unsigned long free_ram_mb = (si.freeram * si.mem_unit) / (1024 * 1024);
     unsigned long used_ram_mb = total_ram_mb - free_ram_mb;
-    total_ram_kb = (si.totalram * si.mem_unit) / 1024;
+    
+    total_ram_pages = si.totalram; // Usamos paginas para calculo preciso
 
     // 2. Iniciar JSON Global
     seq_printf(m, "{\n");
@@ -41,77 +43,69 @@ static int sysinfo_show(struct seq_file *m, void *v) {
     seq_printf(m, "  \"used_ram\": %lu,\n", used_ram_mb);
     seq_printf(m, "  \"processes\": [\n");
 
-    // 3. Recorrer Procesos (task_struct)
+    // 3. Recorrer Procesos
     for_each_process(task) {
+        unsigned long cpu_percent_100 = 0;
         if (!first_process) {
             seq_printf(m, ",\n");
         }
         
-        // Memoria del proceso (RSS y VSZ)
         long rss_kb = 0;
         long vsz_kb = 0;
-        unsigned long mem_percent = 0;
+        unsigned long mem_percent_100 = 0;
         
+        
+        // --- MEMORIA ---
         if (task->mm) {
-            // RSS: Resident Set Size (memoria física)
             rss = get_mm_rss(task->mm);
             rss_kb = (rss * PAGE_SIZE) / 1024;
-            
-            // VSZ: Virtual Memory Size (memoria virtual total)
             vsz = task->mm->total_vm;
             vsz_kb = (vsz * PAGE_SIZE) / 1024;
             
-            // Porcentaje de memoria
-            if (total_ram_kb > 0) {
-                mem_percent = (rss_kb * 100) / total_ram_kb;
+            // Calculo porcentaje RAM (Punto fijo)
+            if (total_ram_pages > 0) {
+                mem_percent_100 = (rss * 10000) / total_ram_pages;
             }
         }
 
-        // Estado del proceso
-        char state_char = task_state_to_char(task);
-        
-        // CPU Usage - calculado como porcentaje simplificado
-        // Nota: El cálculo exacto de %CPU requiere muestreo en el tiempo
-        // Aquí usamos una aproximación basada en utime + stime
-        u64 utime = 0, stime = 0;
-        unsigned long cpu_percent = 0;
-        
-        task_cputime_adjusted(task, &utime, &stime);
-        u64 total_time = utime + stime;
-        // Convertir a jiffies y calcular porcentaje aproximado
-        // Nota: Este es un cálculo simplificado, idealmente necesitas delta de tiempo
-        if (total_time > 0) {
-            cpu_percent = (total_time * 100) / (jiffies + 1);
-            if (cpu_percent > 100) cpu_percent = 0; // Limitar valores anómalos
+        // --- CPU ---
+        // Usamos tiempo de vida del proceso en lugar de jiffies del sistema
+        // para que sea el promedio de vida del proceso, no diluido por uptime del sistema.
+
+        unsigned long total_time = task->utime + task->stime;
+        if (total_jiffies > 0) {
+            cpu_percent_100 = (total_time * 10000) / total_jiffies;
+            cpu_percent_100 = cpu_percent_100 / num_online_cpus();
         }
         
-        // Obtener cmdline (línea de comandos)
-        // Nota: Para procesos del kernel task->mm es NULL, no tienen cmdline
+        // Limpieza de cmdline
         char cmdline[256] = {0};
         if (task->mm) {
-            // Obtener el nombre del comando de argv[0] es complejo desde kernel
-            // Usaremos comm como aproximación, o puedes leer desde /proc/[pid]/cmdline
             snprintf(cmdline, sizeof(cmdline), "%s", task->comm);
         } else {
             snprintf(cmdline, sizeof(cmdline), "[%s]", task->comm);
         }
         
-        // Escribir objeto JSON del proceso
+        char state_char = task_state_to_char(task);
+
+        // --- SALIDA JSON ---
         seq_printf(m, "    {\n");
         seq_printf(m, "      \"pid\": %d,\n", task->pid);
         seq_printf(m, "      \"name\": \"%s\",\n", task->comm);
-        seq_printf(m, "      \"cmdline\": \"%s\",\n", cmdline);
+        seq_printf(m, "      \"cmdline\": \"%s\",\n", cmdline); // Opcional si quieres reducir ruido
         seq_printf(m, "      \"vsz\": %ld,\n", vsz_kb);
         seq_printf(m, "      \"rss\": %ld,\n", rss_kb);
-        seq_printf(m, "      \"mem_percent\": %lu,\n", mem_percent);
-        seq_printf(m, "      \"cpu_percent\": %lu,\n", cpu_percent);
+        
+        // Decimales manuales
+        seq_printf(m, "      \"mem_percent\": %lu.%02lu,\n", mem_percent_100 / 100, mem_percent_100 % 100);
+        seq_printf(m, "      \"cpu_percent\": %lu.%02lu,\n", cpu_percent_100 / 100, cpu_percent_100 % 100);
+        
         seq_printf(m, "      \"state\": \"%c\"\n", state_char);
         seq_printf(m, "    }");
         
         first_process = false;
     }
 
-    // 4. Cerrar JSON
     seq_printf(m, "\n  ]\n");
     seq_printf(m, "}\n");
 

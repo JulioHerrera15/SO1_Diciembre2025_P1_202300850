@@ -8,31 +8,16 @@
 #include <linux/timer.h>
 #include <linux/jiffies.h>
 #include <linux/sched/signal.h>
-#include <linux/pid_namespace.h> // Necesario para detectar contenedores
+#include <linux/pid_namespace.h>
 #include <linux/pid.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Julio Herrera");
 MODULE_DESCRIPTION("Modulo de Procesos de Contenedores JSON");
-MODULE_VERSION("1.0");
+MODULE_VERSION("1.1"); // Version actualizada
 
 // CAMBIA ESTO POR TU CARNET REAL
 #define PROC_NAME "continfo_so1_202300850"
-
-// Función auxiliar para calcular el porcentaje de CPU (Aproximación simple)
-// Nota: Calcular %CPU instantáneo en kernel es complejo. 
-// Aquí usamos el tiempo total de CPU usado / tiempo total desde que inició el proceso.
-// Para mayor precisión, el Daemon de Go debería calcular deltas.
-unsigned long calculate_cpu_usage(struct task_struct *task) {
-    unsigned long total_time = task->utime + task->stime; // Tiempo en modo usuario + kernel
-    unsigned long seconds = (jiffies - task->start_time) / HZ; // Tiempo de vida del proceso en segundos
-    
-    if (seconds == 0) return 0;
-    
-    // Multiplicamos por 100 para porcentaje, dividimos por HZ para normalizar ticks
-    // (Esto es una simplificación académica)
-    return (total_time * 100) / (seconds * HZ); 
-}
 
 static int continfo_show(struct seq_file *m, void *v) {
     struct task_struct *task;
@@ -41,7 +26,7 @@ static int continfo_show(struct seq_file *m, void *v) {
     unsigned long total_ram_pages;
     bool first_process = true;
     
-    // Obtenemos RAM total para calcular porcentajes
+    // Obtenemos RAM total
     struct sysinfo si;
     si_meminfo(&si);
     total_ram_pages = si.totalram;
@@ -49,46 +34,45 @@ static int continfo_show(struct seq_file *m, void *v) {
     seq_printf(m, "[\n");
 
     for_each_process(task) {
-        // FILTRO MAGICO DE CONTENEDORES:
-        // Verificamos si el proceso tiene un mapa de memoria (no es hilo del kernel)
-        // Y verificamos si está en un namespace diferente al root.
-        // task_active_pid_ns(task) devuelve el namespace del proceso.
-        // Si el nivel (level) > 0, significa que está "encapsulado" (contenedor).
         if (task->mm && task_active_pid_ns(task)->level > 0) {
             
             if (!first_process) {
                 seq_printf(m, ",\n");
             }
 
-            // --- Recolección de datos ---
-            
-            // 1. Memoria Física (RSS) en KB
+            // 1. Memoria RSS y VSZ
             rss = get_mm_rss(task->mm) * (PAGE_SIZE / 1024);
-            
-            // 2. Memoria Virtual (VSZ) en KB
             vsz = (task->mm->total_vm) * (PAGE_SIZE / 1024);
 
-            // 3. Porcentaje de RAM
-            // (RSS paginas / Total RAM paginas) * 100
-            // Usamos enteros, asi que multiplicamos por 10000 para tener 2 decimales implicitos si se quisiera
+            // 2. Cálculo Porcentaje RAM (Con decimales)
+            // Multiplicamos por 10000 para guardar 2 decimales en el entero
+            // Ej: 1550 -> 15.50%
             unsigned long rss_pages = get_mm_rss(task->mm);
-            unsigned long mem_percent = (rss_pages * 100) / total_ram_pages;
+            unsigned long mem_percent_100 = (rss_pages * 10000) / total_ram_pages;
+            
+            // 3. Cálculo Porcentaje CPU (Con decimales)
+            unsigned long cpu_usage_percent = 0;
+            unsigned long total_time = task->utime + task->stime;
+            unsigned long total_jiffies = jiffies;
 
-            // 4. Porcentaje de CPU
-            unsigned long cpu_percent = calculate_cpu_usage(task);
+            if (total_jiffies > 0) {
+                cpu_usage_percent = (total_time * 10000) / total_jiffies;
+                cpu_usage_percent = cpu_usage_percent / num_online_cpus();
+            }
 
             // --- Escritura JSON ---
+            // Truco: Imprimimos parte entera y parte decimal separadas por punto
             seq_printf(m, "  {\n");
             seq_printf(m, "    \"pid\": %d,\n", task->pid);
             seq_printf(m, "    \"name\": \"%s\",\n", task->comm);
-            // El ID del contenedor es difícil de sacar directo del task_struct.
-            // El PDF permite "Línea de comando ... O ID". 
-            // Mostraremos el PID del padre como referencia o el mismo PID.
             seq_printf(m, "    \"container_id_or_ppid\": %d,\n", task->real_parent->pid); 
             seq_printf(m, "    \"vsz_kb\": %lu,\n", vsz);
             seq_printf(m, "    \"rss_kb\": %lu,\n", rss);
-            seq_printf(m, "    \"mem_usage_percent\": %lu,\n", mem_percent);
-            seq_printf(m, "    \"cpu_usage_percent\": %lu,\n", cpu_percent);
+            
+            // Formato decimal manual: %lu.%02lu
+            seq_printf(m, "    \"mem_usage_percent\": %lu.%02lu,\n", mem_percent_100 / 100, mem_percent_100 % 100);
+            seq_printf(m, "    \"cpu_usage_percent\": %lu.%02lu,\n", cpu_usage_percent / 100, cpu_usage_percent % 100);
+            
             seq_printf(m, "    \"state\": \"%c\"\n", task_state_to_char(task));
             seq_printf(m, "  }");
 
@@ -112,7 +96,6 @@ static const struct proc_ops continfo_ops = {
 };
 
 static int __init continfo_init(void) {
-    // Crea el archivo /proc/continfo_so1_CARNET
     proc_create(PROC_NAME, 0, NULL, &continfo_ops);
     printk(KERN_INFO "Container info module loaded\n");
     return 0;
