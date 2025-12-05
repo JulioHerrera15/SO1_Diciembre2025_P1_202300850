@@ -4,4 +4,4 @@ FROM python:3.9-alpine
 # 1. Crea un arreglo de bytes de 150 MB (bytearray ocupa RAM real).
 # 2. Imprime un mensaje.
 # 3. Entra en un bucle infinito durmiendo (sleep) para mantener la RAM ocupada sin gastar CPU.
-CMD ["python", "-c", "import time; data = bytearray(150 * 1024 * 1024); print('RAM Allocada: 150MB'); time.sleep(999999)"]
+CMD ["python", "-c", "import time; data = bytearray(60 * 1024 * 1024); print('RAM Allocada: 150MB'); time.sleep(999999)"]

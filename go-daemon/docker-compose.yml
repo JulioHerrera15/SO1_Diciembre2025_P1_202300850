@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana_so1
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=frser-sqlite-datasource,fr-ser-sqlite-datasource
+    volumes:
+      - ./logs_so1.db:/tmp/logs_so1.db
+      - ./plugins:/var/lib/grafana/plugins
+      - ./grafana_data:/var/lib/grafana
+    user: "0"
