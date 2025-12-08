@@ -20,7 +20,7 @@ import (
 // --- CONFIGURACIÓN ---
 const CARNET = "202300850"
 const DB_NAME = "logs_so1.db"
-// Ruta absoluta a tu script bash
+// Ruta absoluta a script bash
 const SCRIPT_PATH = "/home/vm/proyecto1/container.sh"
 
 var PROC_CONTINFO = fmt.Sprintf("/proc/continfo_so1_%s", CARNET)
