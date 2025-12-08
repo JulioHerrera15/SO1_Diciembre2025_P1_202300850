@@ -51,6 +51,7 @@ func main() {
 	dbPath := filepath.Join(cwd, DB_NAME)
 
 	initDB(dbPath)
+	installKernelModules()
 	initGrafana(cwd, dbPath)
 	setupCronjob()
 	defer removeCronjob()
@@ -86,7 +87,9 @@ func main() {
 }
 
 func loopPrincipal(dbPath string) {
-	fmt.Printf("\n--- Ciclo: %s ---\n", time.Now().Format("15:04:05"))
+	loc, _ := time.LoadLocation("America/Guatemala")
+	now := time.Now().In(loc)
+	fmt.Printf("\n--- Ciclo: %s ---\n", now.Format("2006-01-02 15:04:05"))
 
 	// A. Leer Sysinfo
 	dataSys, err := ioutil.ReadFile(PROC_SYSINFO)
@@ -209,15 +212,44 @@ func initGrafana(cwd string, dbPath string) {
 	err := cmd.Run()
 	if err != nil {
 		// Fallback: Si falla "docker compose", intentamos con el viejo "docker-compose"
-		fmt.Println("   ⚠️ 'docker compose' falló, intentando 'docker-compose' (v1)...")
+		fmt.Println("   [WARNING] 'docker compose' falló, intentando 'docker-compose' (v1)...")
 		cmdV1 := exec.Command("docker-compose", "up", "-d")
 		if errV1 := cmdV1.Run(); errV1 != nil {
-			fmt.Printf("❌ Error crítico iniciando Grafana: %v\n", errV1)
+			fmt.Printf("[ERROR] Error crítico iniciando Grafana: %v\n", errV1)
 			return
 		}
 	}
 
-	fmt.Println("✅ Grafana está corriendo (Persistencia activada).")
+	fmt.Println("[OK] Grafana está corriendo (Persistencia activada).")
+}
+
+func installKernelModules() {
+	fmt.Println("[*] Compilando módulos del kernel...")
+	cmdMake := exec.Command("make", "-C", "../modules")
+	cmdMake.Stdout = os.Stdout
+	cmdMake.Stderr = os.Stderr
+	err := cmdMake.Run()
+	if err != nil {
+		fmt.Printf("[ERROR] Error compilando módulos del kernel: %v\n", err)
+		return
+	}
+	fmt.Println("[OK] Módulos del kernel compilados correctamente.")
+	fmt.Println("[*] Instalando módulos del kernel necesarios...")
+	modules := []string{"../modules/continfo.ko", "../modules/sysinfo.ko"}
+	for _, mod := range modules {
+		err := exec.Command("sudo", "insmod", mod).Run()
+		if err != nil {
+			if err.Error() == "exit status 1" {
+				fmt.Printf("   [OK] Módulo %s ya está cargado.\n", mod)
+				continue
+			} else{
+				fmt.Printf("   [WARNING] No se pudo cargar el módulo %s: %v\n", mod, err)
+			}
+		} else {
+			fmt.Printf("   [OK] Módulo %s cargado correctamente.\n", mod)
+		}
+	}
+	
 }
 
 func initDB(dbPath string) {
