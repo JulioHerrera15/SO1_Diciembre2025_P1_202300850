@@ -1,0 +1,3 @@
+FROM alpine:latest
+# No hace nada, solo existe y ocupa espacio mínimo en la lista de procesos
+CMD ["sleep", "infinity"]
