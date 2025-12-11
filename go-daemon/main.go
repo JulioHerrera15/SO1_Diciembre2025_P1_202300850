@@ -35,10 +35,18 @@ type Process struct {
 	CpuPercent  float64 `json:"cpu_usage_percent"`
 }
 
+type SysProc struct {
+	Pid        int     `json:"pid"`
+	Name       string  `json:"name"`
+	RSS        int     `json:"rss"`        
+	CpuPercent float64 `json:"cpu_percent"`
+}
+
 type SystemInfo struct {
 	TotalRam int64 `json:"total_ram"`
 	FreeRam  int64 `json:"free_ram"`
 	UsedRam  int64 `json:"used_ram"`
+	Processes []SysProc `json:"processes"`
 }
 
 func main() {
@@ -98,8 +106,13 @@ func loopPrincipal(dbPath string) {
 		if errJson := json.Unmarshal(dataSys, &sysInfo); errJson == nil {
 			guardarSystemStats(dbPath, sysInfo)
 			fmt.Printf("Sistema: RAM Total %d MB | Libre %d MB\n", sysInfo.TotalRam, sysInfo.FreeRam)
+			guardarLogProcesosSistema(dbPath, sysInfo.Processes)
 		}
+	} else {
+		fmt.Printf("[ERROR] Error leyendo System Info: %v\n", err)
 	}
+
+	
 
 	// B. Leer Contenedores
 	dataCont, err := ioutil.ReadFile(PROC_CONTINFO)
@@ -265,9 +278,11 @@ func initDB(dbPath string) {
 
 	sqlLogs := `CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER, name TEXT, ram_usage INTEGER, cpu_usage REAL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);`
 	sqlSys := `CREATE TABLE IF NOT EXISTS system_stats (id INTEGER PRIMARY KEY AUTOINCREMENT, total_ram INTEGER, free_ram INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);`
+	sqlSysProcs := `CREATE TABLE IF NOT EXISTS sys_proc_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, pid INTEGER, name TEXT, ram_usage INTEGER, cpu_usage REAL, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);`
 
 	db.Exec(sqlLogs)
 	db.Exec(sqlSys)
+	db.Exec(sqlSysProcs)
 }
 
 func guardarLogProceso(dbPath string, p Process) {
@@ -276,6 +291,20 @@ func guardarLogProceso(dbPath string, p Process) {
 	stmt, _ := db.Prepare("INSERT INTO logs(pid, name, ram_usage, cpu_usage) values(?,?,?,?)")
 	defer stmt.Close()
 	stmt.Exec(p.Pid, p.Name, p.RSS, p.CpuPercent)
+}
+
+func guardarLogProcesosSistema(dbPath string, procs []SysProc) {
+	db, _ := sql.Open("sqlite3", dbPath)
+	defer db.Close()
+	
+	tx, _ := db.Begin()
+	stmt, _ := tx.Prepare("INSERT INTO sys_proc_logs(pid, name, ram_usage, cpu_usage) values(?,?,?,?)")
+	defer stmt.Close()
+
+	for _, p := range procs {
+		stmt.Exec(p.Pid, p.Name, p.RSS, p.CpuPercent)
+	}
+	tx.Commit()
 }
 
 func guardarSystemStats(dbPath string, sys SystemInfo) {
